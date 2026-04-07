@@ -1,0 +1,138 @@
+add_action('admin_post_nopriv_save_booking', 'handle_booking');
+add_action('admin_post_save_booking', 'handle_booking');
+
+function handle_booking() {
+
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+        wp_die("Invalid request");
+    }
+
+    global $wpdb;
+    $table = $wpdb->prefix . 'doctor_bookings';
+
+    // 🧹 SANITIZE
+    $name   = sanitize_text_field($_POST['name']);
+    $email  = sanitize_email($_POST['email']);
+    $phone  = sanitize_text_field($_POST['phone']);
+    $doctor = sanitize_text_field($_POST['doctor']);
+    $date   = sanitize_text_field($_POST['date']);
+    $time   = sanitize_text_field($_POST['time']);
+    $mode   = sanitize_text_field($_POST['mode']);
+    $payment_type = sanitize_text_field($_POST['payment_type']);
+
+    $user_id = get_current_user_id();
+
+    // ❌ VALIDATION
+    if (!$name || !$email || !$phone || !$doctor || !$date || !$time || !$mode || !$payment_type) {
+        wp_die("❌ All fields are required");
+    }
+
+    if ($mode === 'online' && $payment_type === 'offline') {
+        wp_die("❌ Invalid payment method for online consultation");
+    }
+
+    // ❌ SLOT CHECK
+    $exists = $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM $table 
+         WHERE doctor=%s AND date=%s AND time=%s 
+         AND status IN ('pending','confirmed')",
+        $doctor, $date, $time
+    ));
+
+    if ($exists > 0) {
+        wp_die("❌ This slot is already booked.");
+    }
+
+    // 🔥 FIRST ONLINE CHECK
+    $previous_online = $wpdb->get_var($wpdb->prepare(
+        "SELECT COUNT(*) FROM $table 
+         WHERE user_id=%d AND mode='online' 
+         AND status IN ('pending','confirmed','cancelled')",
+        $user_id
+    ));
+
+    // ✅ INSERT
+    $wpdb->insert($table, [
+        'user_id' => $user_id,
+        'name'    => $name,
+        'email'   => $email,
+        'phone'   => $phone,
+        'doctor'  => $doctor,
+        'date'    => $date,
+        'time'    => $time,
+        'mode'    => $mode,
+        'status'  => 'pending',
+        'payment_status' => 'unpaid'
+    ]);
+
+    $booking_id = $wpdb->insert_id;
+
+    // =========================
+    // 🟢 FIRST ONLINE FREE
+    // =========================
+    if ($mode === 'online' && $previous_online == 0) {
+
+        // ✅ secure meeting link
+        $meeting_link = "https://meet.jit.si/doctor-" . $booking_id . "-" . wp_generate_password(8, false);
+
+        $wpdb->update($table, [
+            'payment_status' => 'free',
+            'status' => 'confirmed',
+            'meeting_link' => $meeting_link
+        ], ['id' => $booking_id]);
+
+        // 📧 EMAIL
+        $message = "
+Hello $name,
+
+Your appointment is confirmed.
+
+Doctor: $doctor
+Date: $date
+Time: $time
+
+Join here: $meeting_link
+";
+
+        wp_mail($email, "Appointment Confirmed", $message);
+
+        wp_redirect(home_url('/payment-success/?id=' . $booking_id));
+        exit;
+    }
+
+    // =========================
+    // 🟡 OFFLINE CASH (NO LINK)
+    // =========================
+    if ($payment_type === 'offline') {
+
+        $wpdb->update($table, [
+            'payment_status' => 'cash',
+            'status' => 'confirmed',
+            'meeting_link' => '' // ❌ no link
+        ], ['id' => $booking_id]);
+
+        // 📧 EMAIL
+        $message = "
+Hello $name,
+
+Your appointment is confirmed.
+
+Doctor: $doctor
+Date: $date
+Time: $time
+
+Please visit clinic for consultation.
+";
+
+        wp_mail($email, "Appointment Confirmed", $message);
+
+        wp_redirect(home_url('/payment-success/?id=' . $booking_id));
+        exit;
+    }
+
+    // =========================
+    // 🔵 ONLINE PAYMENT
+    // =========================
+    wp_redirect(home_url('/payment/?booking_id=' . $booking_id));
+    exit;
+}
