@@ -1,0 +1,42 @@
+add_action('wp_ajax_get_slots', 'get_slots');
+add_action('wp_ajax_nopriv_get_slots', 'get_slots');
+
+function get_slots() {
+
+    global $wpdb;
+
+    $doctor = sanitize_text_field($_POST['doctor']);
+    $date   = sanitize_text_field($_POST['date']);
+
+    $table = $wpdb->prefix . 'doctor_bookings';
+
+    $booked = $wpdb->get_col($wpdb->prepare(
+        "SELECT time FROM $table 
+         WHERE doctor = %s AND date = %s 
+         AND status IN ('pending','confirmed')",
+        $doctor, $date
+    ));
+
+    $all_slots = ['10 AM', '2 PM'];
+
+    $result = [];
+
+    foreach ($all_slots as $slot) {
+
+        if (in_array($slot, $booked)) {
+            $result[] = [
+                'label' => $slot . ' (Booked)',
+                'value' => $slot,
+                'disabled' => true
+            ];
+        } else {
+            $result[] = [
+                'label' => $slot,
+                'value' => $slot,
+                'disabled' => false
+            ];
+        }
+    }
+
+    wp_send_json($result);
+}
